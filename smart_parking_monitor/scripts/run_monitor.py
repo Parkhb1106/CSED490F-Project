@@ -9,8 +9,8 @@ from smart_parking.pipeline import SmartParkingMonitor
 
 def main():
     monitor = SmartParkingMonitor(
-        use_yolo=False,          # YOLO 쓰려면 True 로 + 모델 준비
-        video_source=0           # or "data/videos/parking_sample.mp4"
+        use_yolo=True,          # YOLO 쓰려면 True 로 + 모델 준비
+        video_source="data/videos/pklot_train_5fps.mp4"           # or "data/videos/parking_sample.mp4"
     )
     monitor.run()
 
