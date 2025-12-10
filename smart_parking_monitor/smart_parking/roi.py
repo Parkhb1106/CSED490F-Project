@@ -88,19 +88,76 @@ class ParkingSlotDetector:
         self._collect_frames = 0
         self._min_collect_frames = min_collect_frames
 
+        # 동적 업데이트 관련 상태
+        self._total_frames = 0               # update_auto가 호출된 총 프레임 수
+        self._last_rebuild_frame = 0         # 마지막으로 슬롯을 만든 시점
+        self._bad_match_frames = 0           # 슬롯과 안 맞는 프레임이 연속 몇 프레임인지
+
+        # 튜닝 가능한 하이퍼파라미터들
+        self._outside_ratio_threshold = 0.5  # 한 프레임에서 이 비율 이상이 슬롯 밖이면 "이상"
+        self._bad_match_required = 30        # 몇 프레임 연속 이상이면 재캘리브레이션
+        self._rebuild_cooldown = 300         # 최소 몇 프레임은 버티고 나서야 다시 리빌드
+
     # ---- public API ----
     def is_initialized(self) -> bool:
         return self.initialized
 
     def update_auto(self, frame, detections: List[Detection]):
-        """각 프레임마다 호출: detections를 이용해 auto-ROI 학습."""
-        if self.initialized:
-            return
+        """각 프레임마다 호출: detections를 이용해 auto-ROI 학습/업데이트."""
+        self._total_frames += 1
 
         h, w = frame.shape[:2]
         if self._frame_shape is None:
             self._frame_shape = (h, w)
 
+        # ============================
+        # (1) 이미 슬롯이 있는 경우:
+        #     "슬롯이 여전히 잘 맞는지"만 검사
+        # ============================
+        if self.initialized:
+            # 1) 이번 프레임의 detection 들 중
+            #    bbox 중심이 어떤 슬롯에도 안 들어가는 비율 계산
+            outside = 0
+            for det in detections:
+                x1, y1, x2, y2 = det.bbox
+                cx = int((x1 + x2) / 2.0)
+                cy = int((y1 + y2) / 2.0)
+                if self.point_in_slot(cx, cy) is None:
+                    outside += 1
+
+            outside_ratio = (outside / len(detections)) if detections else 0.0
+
+            if outside_ratio > self._outside_ratio_threshold:
+                self._bad_match_frames += 1
+            else:
+                self._bad_match_frames = 0
+
+            # 2) 꽤 오랫동안 계속 많이 어긋나 있으면
+            #    → 레이아웃이 바뀌었다고 보고 재캘리브레이션 준비
+            if (
+                self._bad_match_frames >= self._bad_match_required
+                and self._total_frames - self._last_rebuild_frame >= self._rebuild_cooldown
+            ):
+                print(
+                    f"[ROI] layout drift detected "
+                    f"(outside_ratio={outside_ratio:.2f}), resetting slots..."
+                )
+                # 재학습을 위해 상태 리셋
+                self.slots = []
+                self.initialized = False
+                self._centers.clear()
+                self._heights.clear()
+                self._collect_frames = 0
+                self._bad_match_frames = 0
+                # _last_rebuild_frame 는 실제로 새 슬롯이 만들어질 때 갱신
+
+            # initialized 상태에서는 여기서 종료
+            return
+
+        # ==========================================
+        # (2) 아직 슬롯이 없는 경우 (초기 or reset 이후):
+        #     이전과 동일하게 N프레임 모아서 슬롯 생성
+        # ==========================================
         self._collect_frames += 1
 
         for det in detections:
@@ -193,4 +250,5 @@ class ParkingSlotDetector:
 
         self.slots = slots
         self.initialized = True
+        self._last_rebuild_frame = self._total_frames
         print(f"[ROI] Auto-ROI initialized with {len(self.slots)} slots")
