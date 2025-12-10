@@ -38,10 +38,12 @@ class SmartParkingMonitor:
 
             now = time.time()
 
-            self.slot_detector.ensure_initialized(frame)
+            #self.slot_detector.ensure_initialized(frame)
 
             detections = self.detector.detect(frame)
+            self.slot_detector.update_auto(frame, detections)
             tracks = self.tracker.update(detections, now)
+            
 
             slots = self.slot_detector.get_slots()
             events = self.anomaly_detector.update_and_detect(
