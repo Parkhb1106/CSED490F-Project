@@ -1,6 +1,7 @@
 # smart_parking/pipeline.py
 import cv2
 import time
+from pathlib import Path
 
 from .detector import VehicleDetector
 from .tracker import SimpleTracker
@@ -21,7 +22,7 @@ class SmartParkingMonitor:
             long_parking_time=60.0
         )
         self.vlm_reporter = VLMReporter()
-        self.video_source = video_source
+        self.video_source = self._resolve_video_source(video_source)
 
     def run(self):
         cap = cv2.VideoCapture(self.video_source)
@@ -88,3 +89,21 @@ class SmartParkingMonitor:
         cap.release()
         cv2.destroyAllWindows()
         print("[Info] Stopped")
+
+    def _resolve_video_source(self, source: int | str):
+        """Allow relative paths regardless of the current working directory."""
+        if isinstance(source, int):
+            return source
+
+        path = Path(source)
+        if path.is_file():
+            return str(path)
+
+        # Try resolving relative to project root (smart_parking_monitor)
+        project_root = Path(__file__).resolve().parents[1]
+        candidate = project_root / path
+        if candidate.is_file():
+            return str(candidate)
+
+        print(f"[Warn] Video source not found: {source}")
+        return str(path)

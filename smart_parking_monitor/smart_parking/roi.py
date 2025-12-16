@@ -87,6 +87,9 @@ class ParkingSlotDetector:
         self._heights: List[float] = []
         self._collect_frames = 0
         self._min_collect_frames = min_collect_frames
+        # detection 샘플이 과도하게 누적되면 같은 슬롯이 여러 번 기록되어
+        # row 분할과 width 추정이 크게 틀어질 수 있으므로 최소 간격 제어
+        self._min_slot_gap_px = 12.0
 
     # ---- public API ----
     def is_initialized(self) -> bool:
@@ -164,16 +167,25 @@ class ParkingSlotDetector:
         for row_pts in rows:
             if len(row_pts) < 2:
                 continue
-            # x 정렬 후 간격으로 width 추정
+            # x 정렬 후 간격으로 width 추정 (동일 슬롯에 대한 반복 샘플 제거)
             xs = np.sort(row_pts[:, 0])
             dx = np.diff(xs)
-            med_dx = float(np.median(dx))
+            # 동일 슬롯에서 나온 매우 작은 간격은 제외
+            valid_dx = dx[dx > self._min_slot_gap_px]
+            if len(valid_dx) == 0:
+                continue
+            med_dx = float(np.median(valid_dx))
             if med_dx < 10:  # 이상하게 작으면 skip
                 continue
             slot_width = med_dx * 0.9
             slot_height = global_med_height * 1.2
 
-            for cx, cy in row_pts:
+            # 가까운 center 들은 하나의 슬롯으로 병합하여 중복 생성을 방지
+            merged_pts = self._merge_close_points(
+                row_pts,
+                min_gap=max(self._min_slot_gap_px, slot_width * 0.5))
+
+            for cx, cy in merged_pts:
                 half_w = slot_width / 2.0
                 half_h = slot_height / 2.0
                 x1 = int(max(0, cx - half_w))
@@ -193,4 +205,21 @@ class ParkingSlotDetector:
 
         self.slots = slots
         self.initialized = True
+        # 초기화 이후에는 샘플을 비워 재학습 시 히스토리가 뒤섞이는 것을 막는다
+        self._centers.clear()
+        self._heights.clear()
         print(f"[ROI] Auto-ROI initialized with {len(self.slots)} slots")
+
+    def _merge_close_points(self, row_pts: np.ndarray, min_gap: float) -> np.ndarray:
+        """X축 기준으로 가까운 center들을 하나로 병합하여 중복 슬롯 생성을 방지"""
+        if len(row_pts) == 0:
+            return row_pts
+        order = np.argsort(row_pts[:, 0])
+        sorted_pts = row_pts[order]
+        merged = [sorted_pts[0].astype(float)]
+        for pt in sorted_pts[1:]:
+            if pt[0] - merged[-1][0] < min_gap:
+                merged[-1] = (merged[-1] + pt) / 2.0
+            else:
+                merged.append(pt.astype(float))
+        return np.array(merged)

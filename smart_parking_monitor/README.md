@@ -16,3 +16,4 @@ pip install -r requirements.txt
 cd smart_parking_monitor
 python data/loadPKLot.py
 python scripts/run_monitor.py
+python smart_parking_monitor/scripts/run_monitor.py
