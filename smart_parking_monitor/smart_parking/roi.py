@@ -95,8 +95,11 @@ class ParkingSlotDetector:
 
         # 튜닝 가능한 하이퍼파라미터들
         self._outside_ratio_threshold = 0.5  # 한 프레임에서 이 비율 이상이 슬롯 밖이면 "이상"
-        self._bad_match_required = 30        # 몇 프레임 연속 이상이면 재캘리브레이션
-        self._rebuild_cooldown = 300         # 최소 몇 프레임은 버티고 나서야 다시 리빌드
+        self._bad_match_required = 50        # 몇 프레임 연속 이상이면 재캘리브레이션
+        self._rebuild_cooldown = 500         # 최소 몇 프레임은 버티고 나서야 다시 리빌드
+
+        self._outside_ratio_history = []  # For smoothing
+        self._ema_alpha = 0.1  # Smoothing factor
 
     # ---- public API ----
     def is_initialized(self) -> bool:
@@ -115,7 +118,7 @@ class ParkingSlotDetector:
         #     "슬롯이 여전히 잘 맞는지"만 검사
         # ============================
         if self.initialized:
-            # 1) 이번 프레임의 detection 들 중
+            """# 1) 이번 프레임의 detection 들 중
             #    bbox 중심이 어떤 슬롯에도 안 들어가는 비율 계산
             outside = 0
             for det in detections:
@@ -130,7 +133,16 @@ class ParkingSlotDetector:
             if outside_ratio > self._outside_ratio_threshold:
                 self._bad_match_frames += 1
             else:
-                self._bad_match_frames = 0
+                self._bad_match_frames = 0"""
+            self._outside_ratio_history.append(outside_ratio)
+            if len(self._outside_ratio_history) > 10:  # Keep last 10
+                self._outside_ratio_history.pop(0)
+            smoothed_ratio = sum(self._outside_ratio_history) / len(self._outside_ratio_history)  # Simple average; could use EMA
+
+            if smoothed_ratio > self._outside_ratio_threshold:
+                self._bad_match_frames += 1
+            else:
+                self._bad_match_frames = max(0, self._bad_match_frames - 1)  # Decay
 
             # 2) 꽤 오랫동안 계속 많이 어긋나 있으면
             #    → 레이아웃이 바뀌었다고 보고 재캘리브레이션 준비
@@ -191,7 +203,7 @@ class ParkingSlotDetector:
         pts = np.array(self._centers)  # (N, 2)
         heights = np.array(self._heights)
 
-        # 1) y 기준으로 정렬 후 row 분리
+        """# 1) y 기준으로 정렬 후 row 분리
         order = np.argsort(pts[:, 1])
         pts_sorted = pts[order]
 
@@ -212,7 +224,19 @@ class ParkingSlotDetector:
             else:
                 rows.append(np.array(current))
                 current = [cur]
-        rows.append(np.array(current))
+        rows.append(np.array(current))"""
+        # Use DBSCAN for y-axis clustering (rows)
+        # eps: max distance for points in same cluster; min_samples: min points per cluster
+        db = DBSCAN(eps=50.0, min_samples=3).fit(pts[:, 1].reshape(-1, 1))  # Tune eps based on video resolution
+        labels = db.labels_
+        unique_labels = set(labels)
+        rows: List[np.ndarray] = []
+        for label in unique_labels:
+            if label == -1:  # Noise points
+                continue
+            row_pts = pts[labels == label]
+            if len(row_pts) >= 2:  # Ensure at least 2 points for a row
+                rows.append(row_pts)
 
         slots: List[ParkingSlot] = []
         global_med_height = float(np.median(heights)) if len(heights) > 0 else 40.0
@@ -221,16 +245,17 @@ class ParkingSlotDetector:
         for row_pts in rows:
             if len(row_pts) < 2:
                 continue
-            # x 정렬 후 간격으로 width 추정
-            xs = np.sort(row_pts[:, 0])
+            # Sort by x for column estimation
+            row_pts = row_pts[np.argsort(row_pts[:, 0])]
+            xs = row_pts[:, 0]
             dx = np.diff(xs)
-            med_dx = float(np.median(dx))
-            if med_dx < 10:  # 이상하게 작으면 skip
+            med_dx = float(np.median(dx)) if len(dx) > 0 else 100.0
+            if med_dx < 20:  # Skip if too close (likely noise)
                 continue
-            slot_width = med_dx * 0.9
-            slot_height = global_med_height * 1.2
+            slot_width = med_dx * 0.8
+            slot_height = global_med_height * 1.5
 
-            for cx, cy in row_pts:
+            """for cx, cy in row_pts:
                 half_w = slot_width / 2.0
                 half_h = slot_height / 2.0
                 x1 = int(max(0, cx - half_w))
@@ -241,6 +266,38 @@ class ParkingSlotDetector:
                                  [x2, y1],
                                  [x2, y2],
                                  [x1, y2]], dtype=np.int32)
+                slots.append(ParkingSlot(slot_id=slot_id, polygon=poly))
+                slot_id += 1"""
+            # Group into columns (slots) based on x-spacing
+            current_slot_centers = []
+            for i, (cx, cy) in enumerate(row_pts):
+                if i == 0 or (cx - row_pts[i-1][0]) > med_dx * 0.5:
+                    if current_slot_centers:
+                        # Create slot from averaged centers
+                        avg_cx = np.mean([p[0] for p in current_slot_centers])
+                        avg_cy = np.mean([p[1] for p in current_slot_centers])
+                        half_w = slot_width / 2.0
+                        half_h = slot_height / 2.0
+                        x1 = int(max(0, avg_cx - half_w))
+                        x2 = int(min(w - 1, avg_cx + half_w))
+                        y1 = int(max(0, avg_cy - half_h))
+                        y2 = int(min(h - 1, avg_cy + half_h))
+                        poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
+                        slots.append(ParkingSlot(slot_id=slot_id, polygon=poly))
+                        slot_id += 1
+                        current_slot_centers = []
+                current_slot_centers.append((cx, cy))
+            # Handle last slot
+            if current_slot_centers:
+                avg_cx = np.mean([p[0] for p in current_slot_centers])
+                avg_cy = np.mean([p[1] for p in current_slot_centers])
+                half_w = slot_width / 2.0
+                half_h = slot_height / 2.0
+                x1 = int(max(0, avg_cx - half_w))
+                x2 = int(min(w - 1, avg_cx + half_w))
+                y1 = int(max(0, avg_cy - half_h))
+                y2 = int(min(h - 1, avg_cy + half_h))
+                poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
                 slots.append(ParkingSlot(slot_id=slot_id, polygon=poly))
                 slot_id += 1
 
