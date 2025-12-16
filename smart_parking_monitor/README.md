@@ -14,6 +14,9 @@ pip install -r requirements.txt
 
 # 실행하려면
 cd smart_parking_monitor
-python data/loadPKLot.py
+
 python scripts/run_monitor.py
+
+
 python smart_parking_monitor/scripts/run_monitor.py
+python smart_parking_monitor/data/loadCNR.py --out datasets/cnrpark --what all --extract --delete-archive

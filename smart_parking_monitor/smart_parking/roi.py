@@ -57,7 +57,7 @@
 import cv2
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .detector import Detection
 
@@ -67,6 +67,7 @@ class ParkingSlot:
     slot_id: int
     polygon: np.ndarray       # (N, 2)
     is_no_parking_zone: bool = False
+    support: int = 0
 
 
 class ParkingSlotDetector:
@@ -90,6 +91,12 @@ class ParkingSlotDetector:
         # detection 샘플이 과도하게 누적되면 같은 슬롯이 여러 번 기록되어
         # row 분할과 width 추정이 크게 틀어질 수 있으므로 최소 간격 제어
         self._min_slot_gap_px = 12.0
+        self._total_frames = 0
+        self._next_slot_id = 1
+        self._slot_support: Dict[int, int] = {}
+        self._slot_validation_deadline: Dict[int, int] = {}
+        self._slot_validation_window = max(90, min_collect_frames * 2)
+        self._min_slot_support = 3
 
     # ---- public API ----
     def is_initialized(self) -> bool:
@@ -97,6 +104,7 @@ class ParkingSlotDetector:
 
     def update_auto(self, frame, detections: List[Detection]):
         """각 프레임마다 호출: detections를 이용해 auto-ROI 학습."""
+        self._total_frames += 1
         h, w = frame.shape[:2]
         if self._frame_shape is None:
             self._frame_shape = (h, w)
@@ -107,8 +115,9 @@ class ParkingSlotDetector:
             cx = (x1 + x2) / 2.0
             cy = (y1 + y2) / 2.0
 
-            # 이미 생성된 슬롯 내부에 있는 detection은 샘플에서 제외한다.
-            if self.slots and self._point_in_existing_slots(int(cx), int(cy)):
+            slot = self._find_slot_for_point(int(cx), int(cy)) if self.slots else None
+            if slot is not None:
+                self._touch_slot(slot.slot_id)
                 continue
 
             self._centers.append((cx, cy))
@@ -124,8 +133,9 @@ class ParkingSlotDetector:
 
         # 충분히 모였으면 slot 생성/갱신
         if self._collect_frames >= min_frames and len(self._centers) > 0:
-            start_slot_id = len(self.slots) + 1
+            start_slot_id = self._next_slot_id
             new_slots = self._build_slots_from_samples(start_slot_id=start_slot_id)
+            self._next_slot_id += len(new_slots)
             self._collect_frames = 0
             self._centers.clear()
             self._heights.clear()
@@ -138,11 +148,15 @@ class ParkingSlotDetector:
             if not self.initialized:
                 self.slots = new_slots
                 self.initialized = True
+                self._register_new_slots(self.slots)
                 print(f"[ROI] Auto-ROI initialized with {len(self.slots)} slots")
             else:
                 added = self._append_new_slots(new_slots)
                 if added:
                     print(f"[ROI] Auto-ROI added {added} new slots (total: {len(self.slots)})")
+
+        if self.initialized:
+            self._prune_invalid_slots()
 
     def get_slots(self) -> List[ParkingSlot]:
         return self.slots
@@ -211,11 +225,13 @@ class ParkingSlotDetector:
             slot_height = global_med_height * 1.2
 
             # 가까운 center 들은 하나의 슬롯으로 병합하여 중복 생성을 방지
-            merged_pts = self._merge_close_points(
+            merged_pts, merged_counts = self._merge_close_points(
                 row_pts,
                 min_gap=max(self._min_slot_gap_px, slot_width * 0.5))
 
-            for cx, cy in merged_pts:
+            for (cx, cy), count in zip(merged_pts, merged_counts):
+                if count < self._min_slot_support:
+                    continue
                 half_w = slot_width / 2.0
                 half_h = slot_height / 2.0
                 x1 = int(max(0, cx - half_w))
@@ -226,41 +242,80 @@ class ParkingSlotDetector:
                                  [x2, y1],
                                  [x2, y2],
                                  [x1, y2]], dtype=np.int32)
-                slots.append(ParkingSlot(slot_id=slot_id, polygon=poly))
+                slots.append(ParkingSlot(slot_id=slot_id, polygon=poly, support=count))
                 slot_id += 1
 
         return slots
 
-    def _merge_close_points(self, row_pts: np.ndarray, min_gap: float) -> np.ndarray:
-        """X축 기준으로 가까운 center들을 하나로 병합하여 중복 슬롯 생성을 방지"""
+    def _merge_close_points(self, row_pts: np.ndarray, min_gap: float) -> Tuple[np.ndarray, List[int]]:
+        """X축 기준으로 가까운 center들을 병합하며 병합된 포인트 수를 함께 반환"""
         if len(row_pts) == 0:
-            return row_pts
+            return row_pts, []
         order = np.argsort(row_pts[:, 0])
         sorted_pts = row_pts[order]
         merged = [sorted_pts[0].astype(float)]
+        counts = [1]
         for pt in sorted_pts[1:]:
             if pt[0] - merged[-1][0] < min_gap:
-                merged[-1] = (merged[-1] + pt) / 2.0
+                merged[-1] = (merged[-1] * counts[-1] + pt) / (counts[-1] + 1)
+                counts[-1] += 1
             else:
                 merged.append(pt.astype(float))
-        return np.array(merged)
-
-    def _point_in_existing_slots(self, x: int, y: int) -> bool:
-        pt = (x, y)
-        for slot in self.slots:
-            if cv2.pointPolygonTest(slot.polygon, pt, False) >= 0:
-                return True
-        return False
+                counts.append(1)
+        return np.array(merged), counts
 
     def _append_new_slots(self, candidate_slots: List[ParkingSlot]) -> int:
         added = 0
+        appended: List[ParkingSlot] = []
         for slot in candidate_slots:
             if self._overlaps_existing(slot):
                 continue
-            slot.slot_id = len(self.slots) + 1
             self.slots.append(slot)
+            appended.append(slot)
             added += 1
+        if appended:
+            self._register_new_slots(appended)
         return added
+
+    def _find_slot_for_point(self, x: int, y: int) -> Optional[ParkingSlot]:
+        pt = (x, y)
+        for slot in self.slots:
+            if cv2.pointPolygonTest(slot.polygon, pt, False) >= 0:
+                return slot
+        return None
+
+    def _touch_slot(self, slot_id: int):
+        current = self._slot_support.get(slot_id, 0) + 1
+        self._slot_support[slot_id] = current
+        if current >= self._min_slot_support:
+            self._slot_validation_deadline.pop(slot_id, None)
+
+    def _register_new_slots(self, slots: List[ParkingSlot]):
+        for slot in slots:
+            self._slot_support[slot.slot_id] = getattr(slot, "support", 0)
+            if self._slot_support[slot.slot_id] < self._min_slot_support:
+                self._slot_validation_deadline[slot.slot_id] = (
+                    self._total_frames + self._slot_validation_window)
+
+    def _prune_invalid_slots(self):
+        if not self._slot_validation_deadline:
+            return
+        kept: List[ParkingSlot] = []
+        removed = False
+        for slot in self.slots:
+            deadline = self._slot_validation_deadline.get(slot.slot_id)
+            support = self._slot_support.get(slot.slot_id, 0)
+            if deadline is not None and self._total_frames > deadline and support < self._min_slot_support:
+                removed = True
+                self._slot_validation_deadline.pop(slot.slot_id, None)
+                self._slot_support.pop(slot.slot_id, None)
+                continue
+            kept.append(slot)
+        if removed:
+            self.slots = kept
+            if len(self.slots) == 0:
+                self.initialized = False
+                print("[ROI] All invalid slots removed; waiting for new samples.")
 
     def _overlaps_existing(self, new_slot: ParkingSlot, iou_thr: float = 0.35) -> bool:
         nx1, ny1, nx2, ny2 = self._polygon_bbox(new_slot.polygon)
