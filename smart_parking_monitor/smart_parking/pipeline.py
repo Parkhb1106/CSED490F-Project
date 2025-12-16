@@ -73,6 +73,9 @@ class SmartParkingMonitor:
         print("[Info] Smart Parking Monitor started")
 
         try:
+            headless = os.getenv("SPM_HEADLESS", "1") == "1"   # 서버 기본 headless=1
+            print(f"[Info] headless={headless}")
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
@@ -150,13 +153,15 @@ class SmartParkingMonitor:
                 if self._web:
                     self._web.frame(vis_frame)
 
-                cv2.imshow("Smart Parking Monitor", vis_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    break
+                if not headless:
+                    cv2.imshow("Smart Parking Monitor", vis_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
 
         finally:
             cap.release()
-            cv2.destroyAllWindows()
+            if not headless:
+                cv2.destroyAllWindows()
             print("[Info] Stopped")
             self._close_web()

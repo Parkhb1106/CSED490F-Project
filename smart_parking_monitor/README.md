@@ -12,6 +12,10 @@ conda activate spm
 pip install --upgrade pip
 pip install -r requirements.txt
 
+# 데이터셋 로드
+cd smart_parking_monitor
+python data/loadPKLot.py
+
 # 웹서버 실행
 cd smart_parking_monitor
 // optional - export SPM_WEB_TOKEN="mysecret"
