@@ -14,4 +14,5 @@ pip install -r requirements.txt
 
 # 실행하려면
 cd smart_parking_monitor
+python data/loadPKLot.py
 python scripts/run_monitor.py

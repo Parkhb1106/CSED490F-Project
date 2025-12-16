@@ -25,6 +25,17 @@ class VehicleDetector:
                 self.use_yolo = False
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
+        if frame is None:
+            return []  # Or handle as needed (e.g., skip frame)
+        
+        # Ensure frame is a valid numpy array
+        if not isinstance(frame, np.ndarray):
+            raise ValueError("Frame must be a numpy array")
+        
+        # Convert grayscale to BGR if necessary (common for PKLot videos)
+        if len(frame.shape) == 2 or (len(frame.shape) == 3 and frame.shape[2] == 1):
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        
         if not self.use_yolo or self.model is None:
             # Dummy detection: 중앙에 박스 하나
             h, w, _ = frame.shape
