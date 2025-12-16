@@ -3,4 +3,5 @@ opencv-python
 ultralytics
 fastapi
 uvicorn
+kagglehub
 requests
