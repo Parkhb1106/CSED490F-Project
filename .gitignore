@@ -1,1 +1,21 @@
 smart_parking_monitor/data/datasets/
+smart_parking_monitor/data/videos/
+
+# Python venv
+.venv/
+.venv*/
+venv/
+ENV/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# build artifacts
+*.dylib
+*.so
+EOF
