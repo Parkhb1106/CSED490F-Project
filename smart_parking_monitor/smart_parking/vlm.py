@@ -47,7 +47,7 @@ class VLMReporter:
             dur_seconds = event.extra_info.get("duration", 0)
             dur_text = self._duration_text(dur_seconds)
             msg = (
-                "차량 ID {track.track_id}가 주차 구역 밖에 정차 중입니다. "
+                f"차량 ID {track.track_id}가 주차 구역 밖에 정차 중입니다. "
                 f"({self._interval_note()}, 위치: ({cx}, {cy}))"
             )
             """

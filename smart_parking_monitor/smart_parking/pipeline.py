@@ -40,6 +40,7 @@ class SmartParkingMonitor:
             frame_interval_minutes=self.frame_interval_minutes or 0.0
         )
         self.video_source = self._resolve_video_source(video_source)
+        self._waiting_for_slots_logged = False
 
     def run(self):
         cap = cv2.VideoCapture(self.video_source)
@@ -70,20 +71,28 @@ class SmartParkingMonitor:
 
             slots = self.slot_detector.get_slots()
 
-            if self.slot_detector.is_initialized() and not self._no_parking_configured:
-                if self.manual_no_parking_slots:
-                    self._apply_no_parking_slots(self.manual_no_parking_slots)
-                    self.manual_no_parking_slots = []
-                if self.interactive_no_parking:
-                    self._prompt_no_parking_slots(frame, slots)
-                self._no_parking_configured = True
+            events = []
+            if self.slot_detector.is_initialized():
+                if not self._no_parking_configured:
+                    if self.manual_no_parking_slots:
+                        self._apply_no_parking_slots(self.manual_no_parking_slots)
+                        self.manual_no_parking_slots = []
+                    if self.interactive_no_parking:
+                        self._prompt_no_parking_slots(frame, slots)
+                    self._no_parking_configured = True
 
-            events = self.anomaly_detector.update_and_detect(
-                tracks=tracks,
-                slots=slots,
-                slot_detector=self.slot_detector,
-                now=anomaly_now
-            )
+                events = self.anomaly_detector.update_and_detect(
+                    tracks=tracks,
+                    slots=slots,
+                    slot_detector=self.slot_detector,
+                    now=anomaly_now
+                )
+                active_event_tracks = self.anomaly_detector.get_active_violation_track_ids()
+            else:
+                if not self._waiting_for_slots_logged:
+                    print("[Info] Waiting for slot detection before processing events...")
+                    self._waiting_for_slots_logged = True
+                active_event_tracks = set()
 
             for ev in events:
                 t = next((t for t in tracks if t.track_id == ev.track_id), None)
@@ -106,11 +115,12 @@ class SmartParkingMonitor:
             for track in tracks:
                 x1, y1, x2, y2 = track.bbox
                 cx, cy = bbox_center(track.bbox)
-                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
+                color = (0, 165, 255) if track.track_id in active_event_tracks else (255, 255, 0)
+                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
                 cv2.circle(vis_frame, (cx, cy), 3, (0, 255, 255), -1)
                 cv2.putText(vis_frame, f"ID {track.track_id}",
                             (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5, (255, 255, 0), 1)
+                            0.5, color, 1)
 
             cv2.imshow("Smart Parking Monitor", vis_frame)
             key = cv2.waitKey(1) & 0xFF

@@ -37,26 +37,37 @@ class AnomalyDetector:
                 "no_parking_slot_id": None,
                 "no_parking_start_time": None,
                 "no_parking_alerted": False,
+                "outside_alerted": False,
+                "long_alerted": False,
+                "outside_violation": False,
+                "long_violation": False,
+                "no_parking_violation": False,
             })
 
             if slot is not None:
                 if state["last_slot"] is None or state["last_slot"].slot_id != slot.slot_id:
                     state["last_slot"] = slot
                     state["last_slot_enter_time"] = now
-                else:
-                    if (now - state["last_slot_enter_time"]) > self.long_parking_time:
-                        events.append(Event(
-                            event_type="LONG_PARKING",
-                            track_id=track.track_id,
-                            timestamp=now,
-                            extra_info={
-                                "slot_id": slot.slot_id,
-                                "duration": now - state["last_slot_enter_time"],
-                            },
-                        ))
-                        state["last_slot_enter_time"] = now
+                    state["long_alerted"] = False
+                duration_in_slot = 0.0
+                if state["last_slot_enter_time"] is not None:
+                    duration_in_slot = now - state["last_slot_enter_time"]
+                if duration_in_slot >= self.long_parking_time and not state["long_alerted"]:
+                    events.append(Event(
+                        event_type="LONG_PARKING",
+                        track_id=track.track_id,
+                        timestamp=now,
+                        extra_info={
+                            "slot_id": slot.slot_id,
+                            "duration": duration_in_slot,
+                        },
+                    ))
+                    state["long_alerted"] = True
+                state["long_violation"] = duration_in_slot >= self.long_parking_time
                 # reset outside tracking because we are within a slot
                 state["outside_start_time"] = None
+                state["outside_alerted"] = False
+                state["outside_violation"] = False
 
                 if slot.is_no_parking_zone:
                     if state["no_parking_slot_id"] != slot.slot_id:
@@ -77,28 +88,43 @@ class AnomalyDetector:
                             },
                         ))
                         state["no_parking_alerted"] = True
+                    state["no_parking_violation"] = True
                 else:
                     state["no_parking_slot_id"] = None
                     state["no_parking_start_time"] = None
                     state["no_parking_alerted"] = False
+                    state["no_parking_violation"] = False
             else:
+                state["last_slot"] = None
+                state["long_violation"] = False
+                state["long_alerted"] = False
                 if state["outside_start_time"] is None:
                     state["outside_start_time"] = now
-                else:
-                    if (now - state["outside_start_time"]) > self.max_outside_time:
-                        events.append(Event(
-                            event_type="OUTSIDE_SLOT_PARKING",
-                            track_id=track.track_id,
-                            timestamp=now,
-                            extra_info={
-                                "duration": now - state["outside_start_time"],
-                            },
-                        ))
-                        state["outside_start_time"] = now
+                    state["outside_alerted"] = False
+                duration_outside = now - state["outside_start_time"]
+                if duration_outside >= self.max_outside_time and not state["outside_alerted"]:
+                    events.append(Event(
+                        event_type="OUTSIDE_SLOT_PARKING",
+                        track_id=track.track_id,
+                        timestamp=now,
+                        extra_info={
+                            "duration": duration_outside,
+                        },
+                    ))
+                    state["outside_alerted"] = True
+                state["outside_violation"] = duration_outside >= self.max_outside_time
                 state["no_parking_slot_id"] = None
                 state["no_parking_start_time"] = None
                 state["no_parking_alerted"] = False
+                state["no_parking_violation"] = False
 
             self.track_state[track.track_id] = state
 
         return events
+
+    def get_active_violation_track_ids(self) -> set[int]:
+        active = set()
+        for track_id, state in self.track_state.items():
+            if state.get("outside_violation") or state.get("long_violation") or state.get("no_parking_violation"):
+                active.add(track_id)
+        return active
