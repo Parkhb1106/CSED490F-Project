@@ -3,9 +3,10 @@
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Iterable, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import cv2
 
@@ -17,6 +18,7 @@ from smart_parking.datasets.utils import resolve_dataset_path  # noqa:E402
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
+CAMERA_PATTERN = re.compile(r"(camera\d+)", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +72,12 @@ def parse_args() -> argparse.Namespace:
               "Defaults to 'dataset_full.mp4' inside the output directory."),
     )
     parser.add_argument(
+        "--group-by-camera",
+        action="store_true",
+        help=("Combine all folders belonging to the same camera (e.g., camera1) "
+              "into one MP4 per camera."),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing MP4 files instead of skipping them.",
@@ -91,6 +99,26 @@ def resolve_single_video_path(dataset_path: Path, output_dir: Path, name: str) -
     if candidate.is_absolute():
         return candidate
     return (output_dir / candidate).resolve()
+
+
+def extract_camera_key(seq_dir: Path, search_root: Path) -> str:
+    """Return a consistent key for the camera folder of this sequence."""
+    rel_parts = seq_dir.resolve().relative_to(search_root).parts
+    for part in reversed(rel_parts):
+        match = CAMERA_PATTERN.fullmatch(part)
+        if match:
+            return match.group(1).lower()
+    return rel_parts[-1].lower()
+
+
+def group_sequences_by_camera(seqs: Sequence[Path], search_root: Path) -> Dict[str, List[Path]]:
+    groups: Dict[str, List[Path]] = {}
+    for seq_dir in seqs:
+        key = extract_camera_key(seq_dir, search_root)
+        groups.setdefault(key, []).append(seq_dir)
+    for key in groups:
+        groups[key].sort(key=lambda p: p.resolve().relative_to(search_root).as_posix())
+    return groups
 
 
 def find_image_dirs(root: Path, output_dir: Path) -> Iterable[Path]:
@@ -221,6 +249,8 @@ def main():
     args = parse_args()
     if args.fps <= 0:
         raise ValueError("FPS must be a positive number.")
+    if args.single_video and args.group_by_camera:
+        raise ValueError("Choose either --single-video or --group-by-camera, not both.")
     dataset_path = resolve_dataset_path(args.dataset)
     if dataset_path is None:
         raise ValueError("Dataset path could not be resolved.")
@@ -233,9 +263,34 @@ def main():
     output_dir = resolve_inside_dataset(dataset_path, args.output_dir, default_output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sequences = list(find_image_dirs(search_root, output_dir))
+    sequences = sorted(
+        find_image_dirs(search_root, output_dir),
+        key=lambda p: p.resolve().relative_to(search_root).as_posix()
+    )
     if not sequences:
         print(f"[Warn] No image directories found under '{search_root}'.")
+        return
+
+    if args.group_by_camera:
+        groups = group_sequences_by_camera(sequences, search_root)
+        max_videos = args.max_videos if args.max_videos and args.max_videos > 0 else None
+        generated = 0
+        skipped = 0
+        for camera_name in sorted(groups.keys()):
+            if max_videos and generated >= max_videos:
+                break
+            target_path = output_dir / f"{camera_name}.mp4"
+            if target_path.exists() and not args.overwrite:
+                print(f"[Skip] Camera '{camera_name}' target '{target_path}' exists.")
+                skipped += 1
+                continue
+            ok, frame_cnt, dirs_used = build_single_video(groups[camera_name], target_path, args.fps, args.max_frames)
+            if ok:
+                generated += 1
+                print(f"[Write] Camera '{camera_name}' -> {target_path} ({frame_cnt} frames from {dirs_used} folders)")
+            else:
+                print(f"[Warn] Unable to build camera video for '{camera_name}'.")
+        print(f"[Done] Generated {generated} camera video(s), skipped {skipped}. Output stored in '{output_dir}'.")
         return
 
     if args.single_video:

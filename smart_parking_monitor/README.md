@@ -8,11 +8,13 @@ conda create -n spm python=3.10
 # 활성화
 conda activate spm
 
-
+# python library 설치
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 실행하려면
+# 데이터셋 준비
+
+# 실행
 cd smart_parking_monitor
 
 python scripts/run_monitor.py --dataset pklot
@@ -53,5 +55,18 @@ python3 scripts/create_video_dataset.py \
 
 - `--single-video` : 모든 카메라/날짜 폴더를 순서대로 이어붙여 하나의 MP4를 만듭니다.
 - `--single-video-name` : 결과 파일명을 지정합니다(기본 `dataset_full.mp4`, `--output-dir` 하위 경로로 저장).
+
+카메라별로 날짜 전체를 모아 각각 하나의 영상으로 만들고 싶다면 `--group-by-camera` 옵션을 사용합니다.
+
+```bash
+python3 scripts/create_video_dataset.py \
+  --dataset cnr \
+  --image-root CNR-EXT_FULL_IMAGE_1000x750/FULL_IMAGE_1000x750 \
+  --output-dir videos \
+  --group-by-camera \
+  --fps 5
+```
+
+`camera1`, `camera2` ... 와 같이 폴더명이 붙은 모든 이미지들이 각각 하나의 MP4로 저장되며, `--max-videos` 옵션을 사용하면 생성할 카메라 수를 제한할 수 있습니다.
 
 영상이 생성되면 `python scripts/run_monitor.py --dataset cnr --video datasets/CNR/videos/OVERCAST/.../camera1.mp4` 처럼 실행하면 됩니다.
