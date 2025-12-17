@@ -1,63 +1,7 @@
-# # smart_parking/roi.py
-# import cv2
-# import numpy as np
-# from dataclasses import dataclass
-# from typing import List, Optional
-
-# @dataclass
-# class ParkingSlot:
-#     slot_id: int
-#     polygon: np.ndarray       # (N, 2)
-#     is_no_parking_zone: bool = False
-
-# class ParkingSlotDetector:
-#     def __init__(self):
-#         self.slots: List[ParkingSlot] = []
-#         self.initialized = False
-
-#     def manual_init_example(self, frame):
-#         h, w, _ = frame.shape
-#         poly1 = np.array([
-#             [w * 0.2, h * 0.3],
-#             [w * 0.4, h * 0.3],
-#             [w * 0.4, h * 0.7],
-#             [w * 0.2, h * 0.7],
-#         ], dtype=np.int32)
-#         poly2 = np.array([
-#             [w * 0.6, h * 0.3],
-#             [w * 0.8, h * 0.3],
-#             [w * 0.8, h * 0.7],
-#             [w * 0.6, h * 0.7],
-#         ], dtype=np.int32)
-#         self.slots = [
-#             ParkingSlot(slot_id=1, polygon=poly1, is_no_parking_zone=False),
-#             ParkingSlot(slot_id=2, polygon=poly2, is_no_parking_zone=False),
-#         ]
-#         self.initialized = True
-#         print("[ROI] Manual parking slots initialized")
-
-#     def ensure_initialized(self, frame):
-#         if not self.initialized:
-#             # TODO: Auto-ROI 알고리즘으로 대체
-#             self.manual_init_example(frame)
-
-#     def get_slots(self) -> List[ParkingSlot]:
-#         return self.slots
-
-#     def point_in_slot(self, x: int, y: int) -> Optional[ParkingSlot]:
-#         pt = (x, y)
-#         for slot in self.slots:
-#             inside = cv2.pointPolygonTest(slot.polygon, pt, False) >= 0
-#             if inside:
-#                 return slot
-#         return None
-
-
-# smart_parking/roi.py
 import cv2
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .detector import Detection
 
@@ -72,91 +16,70 @@ class ParkingSlot:
 
 class ParkingSlotDetector:
     """
-    Auto-ROI:
-      - 초기 몇 프레임 동안 YOLO detection 결과의 bbox center와 크기를 모은 뒤
-      - y 기준으로 row를 나누고, 각 row에서 x 간격과 bbox height를 이용해
-        사각형 슬롯 polygon들을 자동으로 생성한다.
+    Slot layout is bootstrapped form early detections only, then frozen:
+      1) Collect detection bounding boxes for a short window.
+      2) Cluster the boxes by IoU so that the same parked car contributes to one slot.
+      3) Turn the averaged boxes into slot polygons and keep them fixed afterwards.
+
+    This keeps the total slot count low and provides a stable ROI that
+    subsequent vehicle detections can be compared against.
     """
 
-    def __init__(self, min_collect_frames: int = 60):
+    def __init__(self,
+                 min_slot_area: int = 400,
+                 min_collect_frames: int = 80,
+                 min_samples: int = 25,
+                 min_support: int = 3,
+                 cluster_iou: float = 0.55,
+                 max_samples: int = 1500):
         self.slots: List[ParkingSlot] = []
         self.initialized = False
 
-        # auto-ROI를 위한 샘플
-        self._frame_shape: Optional[Tuple[int, int]] = None  # (h, w)
-        self._centers: List[Tuple[float, float]] = []
-        self._heights: List[float] = []
-        self._collect_frames = 0
-        self._min_collect_frames = min_collect_frames
-        # detection 샘플이 과도하게 누적되면 같은 슬롯이 여러 번 기록되어
-        # row 분할과 width 추정이 크게 틀어질 수 있으므로 최소 간격 제어
-        self._min_slot_gap_px = 12.0
-        self._total_frames = 0
+        self._frame_shape: Optional[Tuple[int, int]] = None
+        self._frame_index = 0
         self._next_slot_id = 1
-        self._slot_support: Dict[int, int] = {}
-        self._slot_validation_deadline: Dict[int, int] = {}
-        self._slot_validation_window = max(90, min_collect_frames * 2)
-        self._min_slot_support = 3
 
-    # ---- public API ----
+        self._sample_boxes: List[Tuple[int, int, int, int]] = []
+        self._max_samples = max_samples
+
+        self._min_slot_area = min_slot_area
+        self._min_collect_frames = min_collect_frames
+        self._min_samples = min_samples
+        self._min_support = min_support
+        self._cluster_iou = cluster_iou
+
+    # ---- public API -----------------------------------------------------
     def is_initialized(self) -> bool:
         return self.initialized
 
     def update_auto(self, frame, detections: List[Detection]):
-        """각 프레임마다 호출: detections를 이용해 auto-ROI 학습."""
-        self._total_frames += 1
+        if frame is None:
+            return
+
+        if self.initialized:
+            # Slots remain fixed once initialized so only comparisons happen after this.
+            return
+
         h, w = frame.shape[:2]
         if self._frame_shape is None:
             self._frame_shape = (h, w)
 
-        new_sample = False
-        for det in detections:
-            x1, y1, x2, y2 = det.bbox
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
+        self._frame_index += 1
 
-            slot = self._find_slot_for_point(int(cx), int(cy)) if self.slots else None
-            if slot is not None:
-                self._touch_slot(slot.slot_id)
+        for det in detections:
+            bbox = self._clip_bbox(det.bbox, w, h)
+            if bbox is None:
                 continue
 
-            self._centers.append((cx, cy))
-            self._heights.append(y2 - y1)
-            new_sample = True
+            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+            if area < self._min_slot_area:
+                continue
 
-        if not new_sample:
-            return
+            self._append_sample(bbox)
 
-        self._collect_frames += 1
-        # 초기 학습 이후에는 더 짧은 구간 동안 샘플을 모아서 신규 슬롯을 추적한다.
-        min_frames = self._min_collect_frames if not self.initialized else max(15, self._min_collect_frames // 3)
-
-        # 충분히 모였으면 slot 생성/갱신
-        if self._collect_frames >= min_frames and len(self._centers) > 0:
-            start_slot_id = self._next_slot_id
-            new_slots = self._build_slots_from_samples(start_slot_id=start_slot_id)
-            self._next_slot_id += len(new_slots)
-            self._collect_frames = 0
-            self._centers.clear()
-            self._heights.clear()
-
-            if len(new_slots) == 0:
-                if not self.initialized:
-                    print("[ROI] Auto-ROI failed, no slots generated.")
-                return
-
-            if not self.initialized:
-                self.slots = new_slots
-                self.initialized = True
-                self._register_new_slots(self.slots)
-                print(f"[ROI] Auto-ROI initialized with {len(self.slots)} slots")
-            else:
-                added = self._append_new_slots(new_slots)
-                if added:
-                    print(f"[ROI] Auto-ROI added {added} new slots (total: {len(self.slots)})")
-
-        if self.initialized:
-            self._prune_invalid_slots()
+        if (self._frame_index >= self._min_collect_frames and
+                len(self._sample_boxes) >= self._min_samples):
+            self._finalize_slots()
 
     def get_slots(self) -> List[ParkingSlot]:
         return self.slots
@@ -164,184 +87,116 @@ class ParkingSlotDetector:
     def point_in_slot(self, x: int, y: int) -> Optional[ParkingSlot]:
         if not self.initialized:
             return None
-        pt = (x, y)
-        for slot in self.slots:
-            inside = cv2.pointPolygonTest(slot.polygon, pt, False) >= 0
-            if inside:
-                return slot
-        return None
 
-    # ---- internal helpers ----
-    def _build_slots_from_samples(self, start_slot_id: int = 1) -> List[ParkingSlot]:
-        """모아 둔 center들을 row / column 으로 나누어 자동으로 슬롯 polygon 생성."""
-        if len(self._centers) == 0:
-            return []
-
-        h, w = self._frame_shape
-        pts = np.array(self._centers)  # (N, 2)
-        heights = np.array(self._heights)
-
-        # 1) y 기준으로 정렬 후 row 분리
-        order = np.argsort(pts[:, 1])
-        pts_sorted = pts[order]
-
-        rows: List[np.ndarray] = []
-        current = [pts_sorted[0]]
-        # y 차이가 큰 부분에서 row 분리 (자동 threshold)
-        dy = np.diff(pts_sorted[:, 1])
-        # 작은 간격들(같은 row 내)과 큰 간격들(row 간) 사이에 중간값 사용
-        if len(dy) > 0:
-            median_dy = np.median(dy)
-            row_gap_thr = max(25.0, median_dy * 2.5)  # 경험적 값
-        else:
-            row_gap_thr = 40.0
-
-        for prev, cur in zip(pts_sorted[:-1], pts_sorted[1:]):
-            if abs(cur[1] - prev[1]) < row_gap_thr:
-                current.append(cur)
-            else:
-                rows.append(np.array(current))
-                current = [cur]
-        rows.append(np.array(current))
-
-        slots: List[ParkingSlot] = []
-        global_med_height = float(np.median(heights)) if len(heights) > 0 else 40.0
-        slot_id = start_slot_id
-
-        for row_pts in rows:
-            if len(row_pts) < 2:
-                continue
-            # x 정렬 후 간격으로 width 추정 (동일 슬롯에 대한 반복 샘플 제거)
-            xs = np.sort(row_pts[:, 0])
-            dx = np.diff(xs)
-            # 동일 슬롯에서 나온 매우 작은 간격은 제외
-            valid_dx = dx[dx > self._min_slot_gap_px]
-            if len(valid_dx) == 0:
-                continue
-            med_dx = float(np.median(valid_dx))
-            if med_dx < 10:  # 이상하게 작으면 skip
-                continue
-            slot_width = med_dx * 0.9
-            slot_height = global_med_height * 1.2
-
-            # 가까운 center 들은 하나의 슬롯으로 병합하여 중복 생성을 방지
-            merged_pts, merged_counts = self._merge_close_points(
-                row_pts,
-                min_gap=max(self._min_slot_gap_px, slot_width * 0.5))
-
-            for (cx, cy), count in zip(merged_pts, merged_counts):
-                if count < self._min_slot_support:
-                    continue
-                half_w = slot_width / 2.0
-                half_h = slot_height / 2.0
-                x1 = int(max(0, cx - half_w))
-                x2 = int(min(w - 1, cx + half_w))
-                y1 = int(max(0, cy - half_h))
-                y2 = int(min(h - 1, cy + half_h))
-                poly = np.array([[x1, y1],
-                                 [x2, y1],
-                                 [x2, y2],
-                                 [x1, y2]], dtype=np.int32)
-                slots.append(ParkingSlot(slot_id=slot_id, polygon=poly, support=count))
-                slot_id += 1
-
-        return slots
-
-    def _merge_close_points(self, row_pts: np.ndarray, min_gap: float) -> Tuple[np.ndarray, List[int]]:
-        """X축 기준으로 가까운 center들을 병합하며 병합된 포인트 수를 함께 반환"""
-        if len(row_pts) == 0:
-            return row_pts, []
-        order = np.argsort(row_pts[:, 0])
-        sorted_pts = row_pts[order]
-        merged = [sorted_pts[0].astype(float)]
-        counts = [1]
-        for pt in sorted_pts[1:]:
-            if pt[0] - merged[-1][0] < min_gap:
-                merged[-1] = (merged[-1] * counts[-1] + pt) / (counts[-1] + 1)
-                counts[-1] += 1
-            else:
-                merged.append(pt.astype(float))
-                counts.append(1)
-        return np.array(merged), counts
-
-    def _append_new_slots(self, candidate_slots: List[ParkingSlot]) -> int:
-        added = 0
-        appended: List[ParkingSlot] = []
-        for slot in candidate_slots:
-            if self._overlaps_existing(slot):
-                continue
-            self.slots.append(slot)
-            appended.append(slot)
-            added += 1
-        if appended:
-            self._register_new_slots(appended)
-        return added
-
-    def _find_slot_for_point(self, x: int, y: int) -> Optional[ParkingSlot]:
         pt = (x, y)
         for slot in self.slots:
             if cv2.pointPolygonTest(slot.polygon, pt, False) >= 0:
                 return slot
         return None
 
-    def _touch_slot(self, slot_id: int):
-        current = self._slot_support.get(slot_id, 0) + 1
-        self._slot_support[slot_id] = current
-        if current >= self._min_slot_support:
-            self._slot_validation_deadline.pop(slot_id, None)
+    # ---- sample collection & clustering ---------------------------------
+    def _append_sample(self, bbox: Tuple[int, int, int, int]):
+        self._sample_boxes.append(bbox)
+        if len(self._sample_boxes) > self._max_samples:
+            self._sample_boxes.pop(0)
 
-    def _register_new_slots(self, slots: List[ParkingSlot]):
-        for slot in slots:
-            self._slot_support[slot.slot_id] = getattr(slot, "support", 0)
-            if self._slot_support[slot.slot_id] < self._min_slot_support:
-                self._slot_validation_deadline[slot.slot_id] = (
-                    self._total_frames + self._slot_validation_window)
-
-    def _prune_invalid_slots(self):
-        if not self._slot_validation_deadline:
-            return
-        kept: List[ParkingSlot] = []
-        removed = False
-        for slot in self.slots:
-            deadline = self._slot_validation_deadline.get(slot.slot_id)
-            support = self._slot_support.get(slot.slot_id, 0)
-            if deadline is not None and self._total_frames > deadline and support < self._min_slot_support:
-                removed = True
-                self._slot_validation_deadline.pop(slot.slot_id, None)
-                self._slot_support.pop(slot.slot_id, None)
+    def _finalize_slots(self):
+        clusters = self._cluster_samples()
+        slots: List[ParkingSlot] = []
+        next_id = 1
+        for cluster in clusters:
+            if cluster["count"] < self._min_support:
                 continue
-            kept.append(slot)
-        if removed:
-            self.slots = kept
-            if len(self.slots) == 0:
-                self.initialized = False
-                print("[ROI] All invalid slots removed; waiting for new samples.")
+            bbox = tuple(int(v) for v in cluster["bbox"])
+            polygon = self._bbox_to_polygon(bbox)
+            slots.append(ParkingSlot(
+                slot_id=next_id,
+                polygon=polygon,
+                support=cluster["count"]
+            ))
+            next_id += 1
 
-    def _overlaps_existing(self, new_slot: ParkingSlot, iou_thr: float = 0.35) -> bool:
-        nx1, ny1, nx2, ny2 = self._polygon_bbox(new_slot.polygon)
-        new_area = max(0, nx2 - nx1) * max(0, ny2 - ny1)
-        if new_area <= 0:
-            return True
+        if slots:
+            self.slots = slots
+            self._next_slot_id = next_id
+            self.initialized = True
+            print(f"[ROI] Auto-ROI locked with {len(self.slots)} slots")
+        else:
+            print("[ROI] Not enough consistent detections to lock slots yet")
 
-        for slot in self.slots:
-            sx1, sy1, sx2, sy2 = self._polygon_bbox(slot.polygon)
-            inter_w = max(0, min(nx2, sx2) - max(nx1, sx1))
-            inter_h = max(0, min(ny2, sy2) - max(ny1, sy1))
-            inter_area = inter_w * inter_h
-            if inter_area == 0:
-                continue
-            slot_area = max(0, sx2 - sx1) * max(0, sy2 - sy1)
-            if slot_area <= 0:
-                continue
-            union = new_area + slot_area - inter_area
-            if union <= 0:
-                continue
-            iou = inter_area / union
-            if iou >= iou_thr:
-                return True
-        return False
+    def _cluster_samples(self) -> List[dict]:
+        clusters: List[dict] = []
 
-    def _polygon_bbox(self, poly: np.ndarray) -> Tuple[int, int, int, int]:
-        x_coords = poly[:, 0]
-        y_coords = poly[:, 1]
-        return int(np.min(x_coords)), int(np.min(y_coords)), int(np.max(x_coords)), int(np.max(y_coords))
+        for box in self._sample_boxes:
+            matched = None
+            best_iou = 0.0
+            for cluster in clusters:
+                iou = self._bbox_iou(box, cluster["bbox"])
+                if iou > self._cluster_iou and iou > best_iou:
+                    best_iou = iou
+                    matched = cluster
+
+            if matched is not None:
+                count = matched["count"]
+                blended = (
+                    (matched["bbox"][0] * count + box[0]) / (count + 1),
+                    (matched["bbox"][1] * count + box[1]) / (count + 1),
+                    (matched["bbox"][2] * count + box[2]) / (count + 1),
+                    (matched["bbox"][3] * count + box[3]) / (count + 1),
+                )
+                matched["bbox"] = blended
+                matched["count"] = count + 1
+            else:
+                clusters.append({
+                    "bbox": tuple(float(v) for v in box),
+                    "count": 1
+                })
+
+        # Suppress any clusters that still overlap too much by keeping the strongest ones first.
+        clusters.sort(key=lambda c: c["count"], reverse=True)
+        filtered: List[dict] = []
+        for cluster in clusters:
+            overlapped = any(
+                self._bbox_iou(cluster["bbox"], keep["bbox"]) > self._cluster_iou
+                for keep in filtered
+            )
+            if not overlapped:
+                filtered.append(cluster)
+        return filtered
+
+    # ---- geometry helpers -----------------------------------------------
+    def _bbox_to_polygon(self, bbox: Tuple[int, int, int, int]) -> np.ndarray:
+        x1, y1, x2, y2 = bbox
+        return np.array([
+            [x1, y1],
+            [x2, y1],
+            [x2, y2],
+            [x1, y2],
+        ], dtype=np.int32)
+
+    def _clip_bbox(self, bbox: Tuple[int, int, int, int],
+                   width: int, height: int) -> Optional[Tuple[int, int, int, int]]:
+        x1, y1, x2, y2 = bbox
+        x1 = int(np.clip(x1, 0, width - 1))
+        y1 = int(np.clip(y1, 0, height - 1))
+        x2 = int(np.clip(x2, 0, width - 1))
+        y2 = int(np.clip(y2, 0, height - 1))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2
+
+    def _bbox_iou(self, a: Tuple[int, int, int, int],
+                  b: Tuple[int, int, int, int]) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        inter_w = max(0, min(ax2, bx2) - max(ax1, bx1))
+        inter_h = max(0, min(ay2, by2) - max(ay1, by1))
+        inter = inter_w * inter_h
+        if inter == 0:
+            return 0.0
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        denom = area_a + area_b - inter
+        if denom <= 0:
+            return 0.0
+        return inter / denom
