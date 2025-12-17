@@ -17,6 +17,13 @@ pip install -r requirements.txt
 # 실행
 cd smart_parking_monitor
 
+python smart_parking_monitor/scripts/local_vlm_server.py --host 127.0.0.1 --port 5001
+
+python smart_parking_monitor/scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4 --interactive-no-parking --vlm-endpoint http://127.0.0.1:5001/vlm
+
+# if vlm off(커밋 위치 변경해야)
+python scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4
+
 python scripts/run_monitor.py --dataset pklot
 python scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4
 python scripts/run_monitor.py --dataset cnr --video videos/camera5.mp4
@@ -27,6 +34,9 @@ python smart_parking_monitor/scripts/run_monitor.py --dataset cnr --video videos
 # 이미 알고 있는 슬롯 번호가 있다면 (예시): --no-parking-slots 1,4
 # 실제 VLM API를 사용하려면 --vlm-endpoint https://your-server/vlm (--vlm-api-key KEY) 를 추가하세요.
 #    또는 SMART_PARKING_VLM_ENDPOINT / SMART_PARKING_VLM_API_KEY 환경 변수로도 설정 가능합니다.
+# 로컬에서 테스트용 VLM 서버를 띄우고 싶다면:
+#   1) python smart_parking_monitor/scripts/local_vlm_server.py --host 127.0.0.1 --port 5001
+#   2) python smart_parking_monitor/scripts/run_monitor.py ... --vlm-endpoint http://127.0.0.1:5001/vlm
 
 ## CNR 이미지 → 동영상 만들기
 CNR 데이터셋은 기본적으로 이미지 프레임만 제공하므로, `scripts/create_video_dataset.py`를 이용해 원하는 구간을 MP4로 변환할 수 있습니다.
