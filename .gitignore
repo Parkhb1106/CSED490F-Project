@@ -1,5 +1,6 @@
 smart_parking_monitor/data/datasets/
 smart_parking_monitor/data/videos/
+smart_parking_monitor/datasets/
 
 # Python venv
 .venv/
