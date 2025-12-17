@@ -43,6 +43,13 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable YOLO and use the dummy detector.",
     )
+    parser.add_argument(
+        "--frame-interval-minutes",
+        type=float,
+        default=30.0,
+        help=("Minutes between captured frames in the source images. "
+              "Use 0 to rely on real-time playback timing."),
+    )
     return parser.parse_args()
 
 
@@ -75,6 +82,7 @@ def main():
     monitor = SmartParkingMonitor(
         use_yolo=args.use_yolo,
         video_source=video_source,
+        frame_interval_minutes=args.frame_interval_minutes,
     )
     monitor.run()
 

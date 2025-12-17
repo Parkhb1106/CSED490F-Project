@@ -13,15 +13,26 @@ from .tracker import bbox_center
 class SmartParkingMonitor:
     def __init__(self,
                  use_yolo: bool = False,
-                 video_source: int | str = 0):
+                 video_source: int | str = 0,
+                 frame_interval_minutes: float | None = 30.0):
         self.detector = VehicleDetector(use_yolo=use_yolo)
         self.tracker = SimpleTracker()
         self.slot_detector = ParkingSlotDetector()
+        self.frame_interval_minutes = (
+            frame_interval_minutes if frame_interval_minutes and frame_interval_minutes > 0
+            else None
+        )
+        self._frame_interval_seconds = (
+            self.frame_interval_minutes * 60.0 if self.frame_interval_minutes else None
+        )
+        self._virtual_time = 0.0
         self.anomaly_detector = AnomalyDetector(
             max_outside_time=10.0,
-            long_parking_time=60.0
+            long_parking_time=24 * 3600.0  # 24시간
         )
-        self.vlm_reporter = VLMReporter()
+        self.vlm_reporter = VLMReporter(
+            frame_interval_minutes=self.frame_interval_minutes or 0.0
+        )
         self.video_source = self._resolve_video_source(video_source)
 
     def run(self):
@@ -37,21 +48,26 @@ class SmartParkingMonitor:
             if not ret:
                 break
 
-            now = time.time()
+            tracker_now = time.time()
 
             #self.slot_detector.ensure_initialized(frame)
 
             detections = self.detector.detect(frame)
             self.slot_detector.update_auto(frame, detections)
-            tracks = self.tracker.update(detections, now)
-            
+            tracks = self.tracker.update(detections, tracker_now)
+
+            if self._frame_interval_seconds:
+                anomaly_now = self._virtual_time
+                self._virtual_time += self._frame_interval_seconds
+            else:
+                anomaly_now = tracker_now
 
             slots = self.slot_detector.get_slots()
             events = self.anomaly_detector.update_and_detect(
                 tracks=tracks,
                 slots=slots,
                 slot_detector=self.slot_detector,
-                now=now
+                now=anomaly_now
             )
 
             for ev in events:

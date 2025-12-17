@@ -20,6 +20,9 @@ cd smart_parking_monitor
 python scripts/run_monitor.py --dataset pklot
 python scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4
 python scripts/run_monitor.py --dataset cnr --video videos/camera5.mp4
+# 이미지 프레임 간 간격이 길다면 --frame-interval-minutes 옵션으로 실제 간극(분)을 지정하세요.
+# 예: 30분마다 촬영된 이미지로 만든 영상
+python scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4 --frame-interval-minutes 30
 ## CNR 이미지 → 동영상 만들기
 
 CNR 데이터셋은 기본적으로 이미지 프레임만 제공하므로, `scripts/create_video_dataset.py`를 이용해 원하는 구간을 MP4로 변환할 수 있습니다.
