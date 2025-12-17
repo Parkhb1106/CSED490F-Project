@@ -38,6 +38,9 @@ python smart_parking_monitor/scripts/run_monitor.py --dataset cnr --video videos
 #   1) python smart_parking_monitor/scripts/local_vlm_server.py --host 127.0.0.1 --port 5001
 #   2) python smart_parking_monitor/scripts/run_monitor.py ... --vlm-endpoint http://127.0.0.1:5001/vlm
 
+## Efficient acceleration
+실행하면 자동으로 GPU/FP16 (가능한 경우) 기반 YOLO 추론, 프레임당 비동기 detector 프리패치, 그리고 VLM 비동기 호출이 활성화됩니다. 별도의 옵션 없이도 throughput 을 높이고 latency 를 줄이며, GPU 가 없거나 FP16 을 지원하지 않으면 자동으로 FP32 CPU 경로로 폴백합니다.
+
 ## CNR 이미지 → 동영상 만들기
 CNR 데이터셋은 기본적으로 이미지 프레임만 제공하므로, `scripts/create_video_dataset.py`를 이용해 원하는 구간을 MP4로 변환할 수 있습니다.
 

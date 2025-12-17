@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import base64
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -51,7 +52,9 @@ class VLMReporter:
                  frame_interval_minutes: float = 30.0,
                  remote_endpoint: Optional[str] = None,
                  remote_api_key: Optional[str] = None,
-                 remote_timeout: float = 12.0):
+                 remote_timeout: float = 12.0,
+                 async_mode: bool = True,
+                 max_workers: int = 2):
         self.frame_interval_minutes = frame_interval_minutes
         endpoint = remote_endpoint or os.getenv("SMART_PARKING_VLM_ENDPOINT")
         api = remote_api_key or os.getenv("SMART_PARKING_VLM_API_KEY")
@@ -59,6 +62,9 @@ class VLMReporter:
             self.remote_config = RemoteVLMConfig(endpoint, api_key=api, timeout=remote_timeout)
         else:
             self.remote_config = None
+        self._executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(max_workers=max_workers) if async_mode else None
+        )
 
     def _duration_minutes(self, duration_seconds: float) -> float:
         return max(duration_seconds, 0.0) / 60.0
@@ -79,6 +85,35 @@ class VLMReporter:
 
         remote_msg = self._call_remote_vlm(frame, track, event, template)
         return remote_msg or template
+
+    def report_event(self,
+                     frame: np.ndarray,
+                     track: Track,
+                     event: Event,
+                     callback: Optional[Callable[[str], None]] = None):
+        """
+        Describe an event synchronously or via a background worker, optionally invoking a callback.
+        """
+        if not self._executor:
+            message = self.describe_event(frame, track, event)
+            if callback:
+                callback(message)
+            return message
+
+        future = self._executor.submit(self.describe_event, frame, track, event)
+        if callback:
+            def _emit(fut: Future):
+                try:
+                    callback(fut.result())
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[VLM] Async callback failed: {exc}")
+            future.add_done_callback(_emit)
+        return future
+
+    def shutdown(self):
+        if self._executor:
+            self._executor.shutdown(wait=True)
+            self._executor = None
 
     # ------------------------------------------------------------------
     def _template_message(self, track: Track, event: Event) -> str:

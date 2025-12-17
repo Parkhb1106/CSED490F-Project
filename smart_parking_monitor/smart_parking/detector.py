@@ -4,6 +4,11 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Tuple, List
 
+try:
+    import torch
+except ImportError:  # pragma: no cover - torch is an optional dependency at runtime
+    torch = None
+
 @dataclass
 class Detection:
     bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2)
@@ -17,7 +22,9 @@ class VehicleDetector:
                  img_size: int = 960,
                  conf_threshold: float = 0.25,
                  enable_multiscale: bool = True,
-                 extra_scale: float = 1.6):
+                 extra_scale: float = 1.6,
+                 device: str | None = "auto",
+                 precision: str | None = None):
         self.use_yolo = use_yolo
         self.model = None
         self.cls_ids_of_interest = {2, 3, 5, 7}  # car, motorbike, bus, truck 등
@@ -26,12 +33,33 @@ class VehicleDetector:
         self.scales: List[float] = [1.0]
         if enable_multiscale and extra_scale > 1.0:
             self.scales.append(extra_scale)
+        self.device = self._select_device(device)
+        precision = (precision or "auto").lower()
+        if precision not in {"fp32", "fp16", "auto"}:
+            print(f"[Detector] Unsupported precision '{precision}', falling back to auto.")
+            precision = "auto"
+        if precision == "auto":
+            precision = "fp16" if self.device != "cpu" else "fp32"
+        self.precision = precision
+        self._half_inference = self.precision == "fp16" and self.device != "cpu"
 
         if use_yolo:
             try:
                 from ultralytics import YOLO
                 self.model = YOLO(model_path)
-                print("[Detector] YOLO model loaded")
+                if self.device:
+                    try:
+                        self.model.to(self.device)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[Detector] Failed to move model to {self.device}: {exc}")
+                if self._half_inference:
+                    try:
+                        self.model.model.half()
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[Detector] Half precision init failed: {exc}")
+                        self._half_inference = False
+                        self.precision = "fp32"
+                print(f"[Detector] YOLO model loaded ({self.device}, {self.precision.upper()})")
             except Exception as e:
                 print(f"[Detector] YOLO load failed, fallback to dummy: {e}")
                 self.use_yolo = False
@@ -58,7 +86,9 @@ class VehicleDetector:
             result = self.model(
                 scaled_frame,
                 imgsz=self.img_size,
-                verbose=False
+                verbose=False,
+                device=self.device,
+                half=self._half_inference
             )[0]
             detections.extend(self._extract_detections(result, scale))
 
@@ -120,3 +150,17 @@ class VehicleDetector:
         if union <= 0:
             return 0.0
         return inter / union
+
+    def _select_device(self, device: str | None) -> str:
+        requested = (device or "auto").lower()
+        if requested not in {"auto", "cpu", "cuda"}:
+            print(f"[Detector] Unknown device '{device}', defaulting to auto.")
+            requested = "auto"
+        if requested == "auto":
+            if torch and torch.cuda.is_available():
+                return "cuda"
+            return "cpu"
+        if requested == "cuda" and (not torch or not torch.cuda.is_available()):
+            print("[Detector] CUDA requested but unavailable, using CPU.")
+            return "cpu"
+        return requested
