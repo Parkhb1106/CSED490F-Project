@@ -20,13 +20,13 @@ cd smart_parking_monitor
 python scripts/run_monitor.py --dataset pklot
 python scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4
 python scripts/run_monitor.py --dataset cnr --video videos/camera5.mp4
-# 이미지 프레임 간 간격 설정
-# (예시): 30분마다
+# 이미지 프레임 간 간격 설정 (예시: 30분마다 촬영된 영상)
 python smart_parking_monitor/scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4 --frame-interval-minutes 30
-# 주차 금지 구역
-# (예시) 
+# 주차 금지 구역을 직접 지정하고 싶다면:
 python smart_parking_monitor/scripts/run_monitor.py --dataset cnr --video videos/camera4.mp4 --interactive-no-parking
-# 이미 알고 있는 슬롯 번호가 있다면 (예시): --no-parking-slots 1,4 
+# 이미 알고 있는 슬롯 번호가 있다면 (예시): --no-parking-slots 1,4
+# 실제 VLM API를 사용하려면 --vlm-endpoint https://your-server/vlm (--vlm-api-key KEY) 를 추가하세요.
+#    또는 SMART_PARKING_VLM_ENDPOINT / SMART_PARKING_VLM_API_KEY 환경 변수로도 설정 가능합니다.
 
 ## CNR 이미지 → 동영상 만들기
 CNR 데이터셋은 기본적으로 이미지 프레임만 제공하므로, `scripts/create_video_dataset.py`를 이용해 원하는 구간을 MP4로 변환할 수 있습니다.

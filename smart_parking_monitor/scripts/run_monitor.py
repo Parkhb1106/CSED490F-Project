@@ -61,6 +61,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated slot IDs to always treat as no-parking zones (e.g., '1,3,4').",
     )
+    parser.add_argument(
+        "--vlm-endpoint",
+        type=str,
+        default=None,
+        help="HTTP endpoint of a remote VLM service (e.g., OpenAI, custom server).",
+    )
+    parser.add_argument(
+        "--vlm-api-key",
+        type=str,
+        default=None,
+        help="API key used for the VLM endpoint (optional).",
+    )
+    parser.add_argument(
+        "--vlm-timeout",
+        type=float,
+        default=12.0,
+        help="Timeout (seconds) for remote VLM requests.",
+    )
     return parser.parse_args()
 
 
@@ -107,6 +125,9 @@ def main():
         frame_interval_minutes=args.frame_interval_minutes,
         interactive_no_parking=args.interactive_no_parking,
         manual_no_parking_slots=manual_no_parking_slots,
+        vlm_endpoint=args.vlm_endpoint,
+        vlm_api_key=args.vlm_api_key,
+        vlm_timeout=args.vlm_timeout,
     )
     monitor.run()
 

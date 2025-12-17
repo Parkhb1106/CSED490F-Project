@@ -17,7 +17,10 @@ class SmartParkingMonitor:
                  video_source: int | str = 0,
                  frame_interval_minutes: float | None = 30.0,
                  interactive_no_parking: bool = False,
-                 manual_no_parking_slots: List[int] | None = None):
+                 manual_no_parking_slots: List[int] | None = None,
+                 vlm_endpoint: str | None = None,
+                 vlm_api_key: str | None = None,
+                 vlm_timeout: float = 12.0):
         self.detector = VehicleDetector(use_yolo=use_yolo)
         self.tracker = SimpleTracker()
         self.slot_detector = ParkingSlotDetector()
@@ -37,7 +40,10 @@ class SmartParkingMonitor:
             long_parking_time=24 * 3600.0  # 24시간
         )
         self.vlm_reporter = VLMReporter(
-            frame_interval_minutes=self.frame_interval_minutes or 0.0
+            frame_interval_minutes=self.frame_interval_minutes or 0.0,
+            remote_endpoint=vlm_endpoint,
+            remote_api_key=vlm_api_key,
+            remote_timeout=vlm_timeout,
         )
         self.video_source = self._resolve_video_source(video_source)
         self._waiting_for_slots_logged = False
