@@ -50,6 +50,17 @@ def parse_args() -> argparse.Namespace:
         help=("Minutes between captured frames in the source images. "
               "Use 0 to rely on real-time playback timing."),
     )
+    parser.add_argument(
+        "--interactive-no-parking",
+        action="store_true",
+        help="Show detected slots and let you choose which ones are no-parking zones.",
+    )
+    parser.add_argument(
+        "--no-parking-slots",
+        type=str,
+        default=None,
+        help="Comma-separated slot IDs to always treat as no-parking zones (e.g., '1,3,4').",
+    )
     return parser.parse_args()
 
 
@@ -79,10 +90,23 @@ def main():
     dataset_path = resolve_dataset_path(args.dataset)
     video_source = resolve_video_path(args.video, dataset_path)
 
+    manual_no_parking_slots = None
+    if args.no_parking_slots:
+        try:
+            manual_no_parking_slots = [
+                int(part.strip())
+                for part in args.no_parking_slots.split(",")
+                if part.strip()
+            ]
+        except ValueError:
+            raise SystemExit("Invalid --no-parking-slots value. Use comma-separated integers.")
+
     monitor = SmartParkingMonitor(
         use_yolo=args.use_yolo,
         video_source=video_source,
         frame_interval_minutes=args.frame_interval_minutes,
+        interactive_no_parking=args.interactive_no_parking,
+        manual_no_parking_slots=manual_no_parking_slots,
     )
     monitor.run()
 

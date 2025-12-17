@@ -34,6 +34,9 @@ class AnomalyDetector:
                 "last_slot": None,
                 "last_slot_enter_time": None,
                 "outside_start_time": None,
+                "no_parking_slot_id": None,
+                "no_parking_start_time": None,
+                "no_parking_alerted": False,
             })
 
             if slot is not None:
@@ -52,7 +55,32 @@ class AnomalyDetector:
                             },
                         ))
                         state["last_slot_enter_time"] = now
+                # reset outside tracking because we are within a slot
                 state["outside_start_time"] = None
+
+                if slot.is_no_parking_zone:
+                    if state["no_parking_slot_id"] != slot.slot_id:
+                        state["no_parking_slot_id"] = slot.slot_id
+                        state["no_parking_start_time"] = now
+                        state["no_parking_alerted"] = False
+                    if not state["no_parking_alerted"]:
+                        duration = 0.0
+                        if state["no_parking_start_time"] is not None:
+                            duration = now - state["no_parking_start_time"]
+                        events.append(Event(
+                            event_type="NO_PARKING_ZONE",
+                            track_id=track.track_id,
+                            timestamp=now,
+                            extra_info={
+                                "slot_id": slot.slot_id,
+                                "duration": duration,
+                            },
+                        ))
+                        state["no_parking_alerted"] = True
+                else:
+                    state["no_parking_slot_id"] = None
+                    state["no_parking_start_time"] = None
+                    state["no_parking_alerted"] = False
             else:
                 if state["outside_start_time"] is None:
                     state["outside_start_time"] = now
@@ -67,6 +95,9 @@ class AnomalyDetector:
                             },
                         ))
                         state["outside_start_time"] = now
+                state["no_parking_slot_id"] = None
+                state["no_parking_start_time"] = None
+                state["no_parking_alerted"] = False
 
             self.track_state[track.track_id] = state
 

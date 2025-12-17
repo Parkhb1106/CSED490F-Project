@@ -60,6 +60,15 @@ class VLMReporter:
                 f"{dur_text} 이상 장기 주차 중입니다. "
                 f"({self._interval_note()})"
             )
+        elif event.event_type == "NO_PARKING_ZONE":
+            slot_id = event.extra_info.get("slot_id", -1)
+            dur_seconds = event.extra_info.get("duration", 0)
+            dur_text = self._duration_text(dur_seconds)
+            msg = (
+                f"차량 ID {track.track_id}가 주차 금지 구역 슬롯 {slot_id}에 "
+                f"{dur_text} 동안 머물러 있습니다. "
+                f"({self._interval_note()}, 위치: ({cx}, {cy}))"
+            )
         else:
             msg = f"차량 ID {track.track_id} 관련 이벤트: {event.event_type}"
 
