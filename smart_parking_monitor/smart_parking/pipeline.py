@@ -33,7 +33,7 @@ class SmartParkingMonitor:
         self.manual_no_parking_slots: List[int] = list(manual_no_parking_slots or [])
         self._no_parking_configured = not (self.interactive_no_parking or self.manual_no_parking_slots)
         self.anomaly_detector = AnomalyDetector(
-            max_outside_time=10.0,
+            max_outside_time=60 * 60.0,  # 1시간
             long_parking_time=24 * 3600.0  # 24시간
         )
         self.vlm_reporter = VLMReporter(
